@@ -1,7 +1,8 @@
-from pydantic import BaseModel
-from typing import TypedDict
 import json
-from langgraph.graph import StateGraph, END, START
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel
 
 
 class ConfigProxy:
@@ -99,6 +100,7 @@ class LLMLambda:
         result, _, probs, _  = self.model.model_response(
                 context, structure=self.structure, need_logprobs=self.need_logprobs
             )
+        result = self.model.get_text_from_message(result)
         if self.need_logprobs:
             config.set_by_name(self.output_name + "_probs", probs)
         config.set_by_name(self.output_name, result)
@@ -172,7 +174,7 @@ class Planner:
         result, _ = self.model.single_query_response(
             planner_cot_voter_prompt, structure=SelfConsistencyFormat
         )
-        result = result.parsed
+        result = self.model.get_structure_from_message(result)
         config.print_logs(f"Response: {result}")
         return plans[result.chosen_plan_index]
 
@@ -197,7 +199,7 @@ class Planner:
         result, _, probs = self.model.single_query_response(
             planner_prompt, structure=PlanFormat, need_logprobs=True
         )
-        result = result.parsed
+        result = self.model.get_structure_from_message(result)
         config.probs.append(probs)
         config.print_logs(f"Response: \n{result}")
         return (
@@ -237,7 +239,7 @@ class Planner:
             result, _ = self.model.single_query_response(
                 planner_prompt, structure=PlanStepFormat
             )
-            result = result.parsed
+            result = self.model.get_structure_from_message(result)
             options = result.options
             options_str = "\n".join([f"{n}: {el}" for n, el in enumerate(options)])
             config.print_logs(f"Response: {result}")
@@ -264,7 +266,7 @@ class Planner:
             result, _ = self.model.single_query_response(
                 planner_tot_discriminator_prompt, structure=PlanChoiceFormat
             )
-            result = result.parsed
+            result = self.model.get_structure_from_message(result)
             config.print_logs(f"Response: {result}")
             next_option = options[result.chosen_option_index]
             current_plan.append(next_option)
@@ -323,7 +325,7 @@ class PlannerDomainReflector:
             result, _ = self.model.single_query_response(
                 planner_critic_cells_prompt, structure=PlanReflector
             )
-            result = result.parsed
+            result = self.model.get_structure_from_message(result)
             config.print_logs(f"Response: {result}")
             if not result.changed:
                 break

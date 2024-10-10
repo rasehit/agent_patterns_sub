@@ -1,11 +1,15 @@
 import json
 import re
+import uuid
 from collections.abc import Iterable
-from pydantic import BaseModel, ValidationError
+
 from gigachat.models import Messages
+from pydantic import BaseModel, ValidationError
+
 
 class ParsedMessage(Messages):
     parsed: str | None = None
+
 
 def generate_structured_prompt(schema):
     description = schema.get("description", "")
@@ -30,7 +34,7 @@ def generate_structured_prompt(schema):
 
     def process_field(field_name, field_info, required_fields, definitions, indent):
         indent_str = "  " * indent
-        
+
         # Initialize field description
         field_desc = field_info.get("description", "")
         if field_desc:
@@ -291,3 +295,23 @@ def get_tool_from_pydantic(model):
     }
 
     return tool_schema
+
+
+def remove_trailing_commas(json_string: str) -> str:
+    """
+    Removes trailing commas from the JSON-like string to make it valid JSON.
+
+    Args:
+        json_string (str): The raw JSON-like string.
+
+    Returns:
+        str: The cleaned JSON string without trailing commas.
+    """
+    # Remove trailing commas before closing braces/brackets
+    json_string = re.sub(r",\s*(\}|])", r"\1", json_string)
+    return json_string
+
+
+def generate_func_state_id(txt: str):
+    namespace = uuid.NAMESPACE_DNS
+    return str(uuid.uuid5(namespace, txt))
