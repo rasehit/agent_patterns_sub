@@ -304,9 +304,10 @@ class GigaChatModel(APIModel):
         return {"role": "function", "content": result, "functions_state_id": call_id}
 
 
-class LocalAPIModel(APIModel):
+class LMStudioAPIModel(APIModel):
     def __init__(self, name):
         super().__init__(name)
+        self.client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
         self.get_tool_from_pydantic = pydantic_function_tool
 
     def get_text_message(self, completion: Any) -> str:
@@ -320,14 +321,14 @@ class LocalAPIModel(APIModel):
 
     def signle_response(self, messages, structure, temperature):
         if structure is None:
-            completion = OpenAI().chat.completions.create(
+            completion = self.client.chat.completions.create(
                 model=self.name,
                 messages=messages,
                 temperature=temperature,
                 logprobs=True,
             )
         else:
-            completion = OpenAI().beta.chat.completions.parse(
+            completion = self.client.beta.chat.completions.parse(
                 model=self.name,
                 messages=messages,
                 response_format=structure,
@@ -337,7 +338,7 @@ class LocalAPIModel(APIModel):
         return completion
 
     def signle_response_tools(self, messages, tools, temperature):
-        completion = OpenAI().chat.completions.create(
+        completion = self.client.chat.completions.create(
             model=self.name,
             messages=messages,
             temperature=temperature,
@@ -349,7 +350,4 @@ class LocalAPIModel(APIModel):
         return {"role": "tool", "content": result, "tool_call_id": call_id}
 
     def get_probs(self, completion: Any):
-        return [
-            (x.token, math.exp(x.logprob))
-            for x in completion.choices[0].logprobs.content
-        ]
+        return []

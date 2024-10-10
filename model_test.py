@@ -1,11 +1,10 @@
-from lib.models import OpenAIModel, MistralModel, GigaChatModel
+from lib.models import OpenAIModel, MistralModel, GigaChatModel, LMStudioAPIModel
 from pydantic import BaseModel, Field
 from enum import Enum
 import time
 import os
 from typing import Union
 from openai import pydantic_function_tool
-
 
 class Person(BaseModel):
     name: str
@@ -90,6 +89,7 @@ tools = [pydantic_function_tool(CreatePivotTable)]
 # model = MistralModel("open-mistral-nemo")
 model = OpenAIModel('gpt-4o-mini')
 # model = GigaChatModel('GigaChat-Pro')
+model = LMStudioAPIModel('llama-3.2-3b-instruct')
 
 print_header("Test 1")
 res, usage, probs, times = model.model_response("Who are you?")
