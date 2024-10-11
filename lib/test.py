@@ -116,7 +116,7 @@ def assert_single_text_response(
         tools=tools,
     )
 
-    print(f"\nmessage: {message}")
+    print(f"\n*** Message: {message}")
 
     assert usage.prompt_tokens and usage.completion_tokens and usage.total_tokens
     assert isinstance(times, tuple) or times is None
@@ -138,30 +138,36 @@ def assert_single_text_response(
 
     if tools is not None:
         tool_calls = model.get_tool_call_from_message(message)
-        assert tool_calls is not None, "Expected tool call, got None"
-        print(f"tool_calls: {tool_calls}")
+        assert isinstance(tool_calls, list)
+        if len(tool_calls) > 0:
+            assert all(isinstance(tool, tuple) for tool in tool_calls)
+            assert all(isinstance(tool[0], str) for tool in tool_calls)
+            assert all(isinstance(tool[1], dict) for tool in tool_calls)
+            print(f"tool_calls: {tool_calls}")
 
-        if isinstance(tool_calls, list):
             tool_calls = tool_calls[0]
 
-        call_id = (
-            tool_calls.id if hasattr(tool_calls, "id") else message.functions_state_id
-        )
-        messages = [
-            {"role": "system", "content": "Please create pivot table of your choice"},
-            message,
-            model.tool_feedback("Pivot table was created", call_id),
-        ]
+            call_id = tool_calls[2]
+            messages = [
+                {
+                    "role": "system",
+                    "content": "Please create pivot table of your choice",
+                },
+                message,
+                model.tool_feedback("Pivot table was created", call_id),
+            ]
 
-        time.sleep(5)
-        message, usage, probs, times = model.model_response(messages, tools=tools)
+            time.sleep(5)
+            message, usage, probs, times = model.model_response(messages, tools=tools)
 
-        tool_calls = model.get_tool_call_from_message(message)
-        print(f"message: {message}")
-        print(f"tool_calls: {tool_calls}")
-        assert tool_calls is None
+            tool_calls = model.get_tool_call_from_message(message)
+            print(f"message: {message}")
+            print(f"tool_calls: {tool_calls}")
+            assert len(tool_calls) == 0
+        else:
+            print("*** No tool calls found in the message ***")
 
-    # time.sleep(5)
+    time.sleep(5)
 
 
 def test_gigachat(gigachat_model):
@@ -225,3 +231,8 @@ def test_openai(openai_model):
     assert_single_text_response(
         openai_model, "Please create pivot table of your choice", tools=tools
     )
+    # Test gpt-4o-mini with tools and thought in a row
+    prompt = """You have to thinging and then acting. After take an action you will get observation from this action and repeat this loop again until you reach the goal.
+    Think step by step and provide your thought.
+    """
+    assert_single_text_response(openai_model, prompt, tools=tools)

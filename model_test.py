@@ -1,9 +1,8 @@
 from lib.models import OpenAIModel, MistralModel, GigaChatModel, LMStudioAPIModel
 from pydantic import BaseModel, Field
 from enum import Enum
-import time
-import os
 from typing import Union
+
 from openai import pydantic_function_tool
 
 class Person(BaseModel):
@@ -77,17 +76,20 @@ List can be empty, then no values will be written into the pivot table.
         """
     )
 
+
 def CreatePivotTableRun(source_range, target_cell, rows, columns, values):
     return f"Created pivot table from data in {source_range} with rows {rows}, columns {columns} and values {values}\n"
 
+
 def print_header(header):
     print(f"\n{header:-^80}\n")
+
 
 tools = [pydantic_function_tool(CreatePivotTable)]
 
 
 # model = MistralModel("open-mistral-nemo")
-model = OpenAIModel('gpt-4o-mini')
+model = OpenAIModel("gpt-4o-mini")
 # model = GigaChatModel('GigaChat-Pro')
 model = LMStudioAPIModel('llama-3.2-3b-instruct')
 
@@ -131,16 +133,17 @@ print(res), print(probs), print(usage), print(times)
 time.sleep(5)
 
 print_header("Test 6")
-res, usage, probs, times = model.model_response("Please create pivot table of your choice", tools=tools)
+res, usage, probs, times = model.model_response(
+    "Please create pivot table of your choice", tools=tools
+)
 print(res), print(probs)
 
 time.sleep(5)
 
-messages = \
-[
+messages = [
     {"role": "system", "content": "Please create pivot table of your choice"},
     res,
-    model.tool_feedback("Pivot table was created", res.tool_calls[0].id)
+    model.tool_feedback("Pivot table was created", res.tool_calls[0].id),
 ]
 
 print_header("Test 7")
