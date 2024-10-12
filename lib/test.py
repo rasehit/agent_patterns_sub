@@ -7,7 +7,7 @@ import pytest
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
 
-from lib.models import GigaChatModel, MistralModel, OpenAIModel
+from models import GigaChatModel, MistralModel, OpenAIModel
 
 
 class Person(BaseModel):

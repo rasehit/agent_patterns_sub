@@ -101,7 +101,7 @@ class LLMLambda:
         context = self.context.format_map(config.__dict__)
         config.print_logs(f"Query: {context}")
         message, _, probs, _ = self.model.model_response(
-            context, structure=PlanChoiceFormat, need_logprobs=self.need_logprobs
+            context, structure=self.structure, need_logprobs=self.need_logprobs
         )
         result = self.model.get_structure_from_message(message)
         if self.need_logprobs:
