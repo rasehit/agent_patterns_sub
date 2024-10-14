@@ -1,8 +1,8 @@
 from lib.models import OpenAIModel, MistralModel, GigaChatModel, LMStudioAPIModel
 from pydantic import BaseModel, Field
 from enum import Enum
-from typing import Union
 import time
+from typing import Union
 
 from openai import pydantic_function_tool
 
