@@ -1,22 +1,24 @@
-import os
+import json
 import math
-
+import os
 from abc import ABC, abstractmethod
-from typing import Any, List
-from pydantic import BaseModel
 from datetime import datetime
+from typing import Any, List, Tuple
 
-from openai import OpenAI
-from openai import pydantic_function_tool
-from mistralai import Mistral
 from gigachat import GigaChat
-from gigachat.models import (
-    Chat,
-    Function,
-    Messages,
+from gigachat.models import Chat, Function, FunctionCall, Messages
+from mistralai import Mistral
+from openai import OpenAI, pydantic_function_tool
+from pydantic import BaseModel
+
+from .utils import (
+    generate_func_state_id,
+    generate_structured_prompt,
+    get_tool_from_pydantic_chema,
+    handle_structured,
+    remove_trailing_commas,
 )
 
-from .utils import handle_structured, generate_structured_prompt, get_tool_from_pydantic
 
 class APIModel(ABC):
     def __init__(self, name):
@@ -56,17 +58,12 @@ class APIModel(ABC):
             start = datetime.utcnow()
             completion = self.signle_response(dialog, structure, temperature)
             end = datetime.utcnow()
-            
-            result = (
-                self.get_structure(completion)
-                if structure is not None
-                else self.get_text_message(completion)
-            )
         else:
             start = datetime.utcnow()
             completion = self.signle_response_tools(dialog, tools, temperature)
             end = datetime.utcnow()
-            result = completion.choices[0].message
+
+        result = completion.choices[0].message
 
         usage = self.get_usage(completion)
         created = datetime.utcfromtimestamp(completion.created)
@@ -79,17 +76,26 @@ class APIModel(ABC):
         return (result, usage, probs, (time_llm, time_network))
 
     @abstractmethod
-    def get_text_message(self, completion: Any) -> str: ...
+    def get_text_from_message(self, message: Any) -> str: ...
 
     """
     Returns the text message of the response.
     """
 
     @abstractmethod
-    def get_structure(self, completion: Any) -> BaseModel: ...
+    def get_structure_from_message(self, message: Any) -> BaseModel: ...
 
     """
     Returns the structure of the response.
+    """
+
+    @abstractmethod
+    def get_tool_call_from_message(
+        self, message: Any
+    ) -> list[tuple[str, dict, str]]: ...
+
+    """
+    Returns the tool call of the response.
     """
 
     @abstractmethod
@@ -121,26 +127,56 @@ class APIModel(ABC):
     """
 
     @abstractmethod
-    def get_probs(self, completion: Any) -> list: ...
+    def get_probs(self, completion: Any) -> list[tuple[Any, float]]: ...
 
     """
     Returns the tokens probabilities.
     """
 
+    @abstractmethod
+    def get_tool_mapping(
+        self, tools: list[tuple[BaseModel, Any]]
+    ) -> Tuple[list[Any], dict[str, dict]]: ...
 
-class OpenAIModel(APIModel):
+    """
+    Returns the tools mapping.
+    """
+
+    @abstractmethod
+    def get_tool_from_pydantic(self, tool: BaseModel) -> Any: ...
+
+    """
+    Returns the tools mapping.
+    """
+
+
+class OpenAILikeAPIModel(APIModel):
     def __init__(self, name):
-        super().__init__(name)
-        self.get_tool_from_pydantic = pydantic_function_tool
+        self.name = name
 
-    def get_text_message(self, completion: Any) -> str:
-        return completion.choices[0].message.content
+    def get_text_from_message(self, message: Any) -> str:
+        return message.content
 
-    def get_structure(self, completion: Any) -> BaseModel:
-        return completion.choices[0].message.parsed
+    def get_structure_from_message(self, message: Any) -> BaseModel:
+        return message.parsed
 
     def get_usage(self, completion: Any) -> dict:
         return completion.usage
+
+    def get_tool_mapping(
+        self, tools: list[tuple[BaseModel, Any]]
+    ) -> Tuple[list[Any], dict[str, dict]]:
+        llm_tools = [self.get_tool_from_pydantic(tool) for tool, _ in tools]
+        call_tools = {
+            self.get_tool_from_pydantic(tool)["function"]["name"]: call
+            for tool, call in tools
+        }
+        return llm_tools, call_tools
+
+
+class OpenAIModel(OpenAILikeAPIModel):
+    def __init__(self, name):
+        super().__init__(name)
 
     def signle_response(self, messages, structure, temperature):
         if structure is None:
@@ -169,21 +205,32 @@ class OpenAIModel(APIModel):
         )
         return completion
 
+    def get_tool_call_from_message(self, message: Any) -> list[tuple[str, dict, str]]:
+        tool_calls = message.tool_calls
+        if tool_calls is None:
+            return []
+        return [
+            (call.function.name, json.loads(call.function.arguments), call.id)
+            for call in tool_calls
+        ]
+
     def tool_feedback(self, result, call_id):
         return {"role": "tool", "content": result, "tool_call_id": call_id}
 
-    def get_probs(self, completion: Any):
+    def get_probs(self, completion: Any) -> list[tuple[Any, float]]:
         return [
             (x.token, math.exp(x.logprob))
             for x in completion.choices[0].logprobs.content
         ]
 
+    def get_tool_from_pydantic(self, tool: BaseModel) -> Any:
+        return pydantic_function_tool(tool)
 
-class MistralModel(APIModel):
+
+class MistralModel(OpenAILikeAPIModel):
     def __init__(self, name: str, max_tokens=2048):
         super().__init__(name)
         self.client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
-        self.get_tool_from_pydantic = pydantic_function_tool
         self.max_tokens = max_tokens
 
     def signle_response(self, messages, structure, temperature):
@@ -220,14 +267,14 @@ class MistralModel(APIModel):
         )
         return completion
 
-    def get_text_message(self, completion: Any) -> str:
-        return completion.choices[-1].message.content
-
-    def get_structure(self, completion: Any) -> BaseModel:
-        return completion.choices[-1].message.parsed
-
-    def get_usage(self, completion: Any) -> dict:
-        return completion.usage
+    def get_tool_call_from_message(self, message: Any) -> list[tuple[str, dict, str]]:
+        tool_calls = message.tool_calls
+        if tool_calls is None:
+            return []
+        return [
+            (call.function.name, json.loads(call.function.arguments), call.id)
+            for call in tool_calls
+        ]
 
     def get_structured_query(self, structure, message: dict) -> dict:
         content = message["content"]
@@ -242,8 +289,11 @@ class MistralModel(APIModel):
     def tool_feedback(self, result, call_id):
         return {"role": "tool", "content": result, "tool_call_id": call_id}
 
+    def get_tool_from_pydantic(self, tool: BaseModel) -> Any:
+        return pydantic_function_tool(tool)
 
-class GigaChatModel(APIModel):
+
+class GigaChatModel(OpenAILikeAPIModel):
     def __init__(self, name: str, max_tokens=2048):
         super().__init__(name)
         self.giga = GigaChat(model=self.name)
@@ -257,8 +307,8 @@ class GigaChatModel(APIModel):
             gigachat_messages[-1] = last_message
         chat = Chat(
             messages=gigachat_messages,
-            temperature=temperature+0.01,
-            max_tokens=self.max_tokens
+            temperature=temperature + 0.01,
+            max_tokens=self.max_tokens,
         )
         completion = self.giga.chat(chat)
         if structure is not None:
@@ -269,22 +319,16 @@ class GigaChatModel(APIModel):
         gigachat_messages = [Messages.validate(message) for message in messages]
         chat = Chat(
             messages=gigachat_messages,
-            temperature=temperature+0.01,
+            temperature=temperature + 0.01,
             functions=tools,
             function_call="auto",
-            max_tokens=self.max_tokens
+            max_tokens=self.max_tokens,
         )
         completion = self.giga.chat(chat)
+        msg = completion.choices[0].message
+        if self.get_tool_call_from_message(msg) is None:
+            completion.choices[0].message = self.parse_tool_call(msg, tools)
         return completion
-
-    def get_text_message(self, completion: Any) -> str:
-        return completion.choices[-1].message.content
-
-    def get_structure(self, completion: Any) -> BaseModel:
-        return completion.choices[-1].message.parsed
-
-    def get_usage(self, completion: Any) -> dict:
-        return completion.usage
 
     def get_structured_query(self, structure, message: dict) -> dict:
         content = message.content
@@ -294,9 +338,54 @@ class GigaChatModel(APIModel):
         schema["content"] = content
         return type(message)(**schema)
 
+    def get_tool_call_from_message(self, message: Any) -> list[tuple[str, dict, str]]:
+        tool_call = message.function_call
+        if tool_call is None:
+            return []
+        return [(tool_call.name, tool_call.arguments, message.functions_state_id)]
+
+    def parse_tool_call(self, message: Any, tools_schema: List[dict]) -> Messages:
+
+        text_content = message.content
+        try:
+            cleaned_str = remove_trailing_commas(text_content)
+            react_output = json.loads(cleaned_str)
+        except json.JSONDecodeError:
+            react_output = {
+                "thoughts": cleaned_str,
+                "function_call": None,
+                "args": None,
+            }
+
+        thought = react_output.get("thoughts")
+        function_name = react_output.get("function_call", "")
+        args = react_output.get("args")
+        if function_name in tools_schema:
+            func_call = FunctionCall(
+                name=function_name,
+                arguments=args,
+            )
+            message = Messages(
+                role="assistant",
+                content=thought,
+                function_call=func_call,
+                functions_state_id=generate_func_state_id(message.content),
+            )
+
+        return message
+
     def get_tool_from_pydantic(self, tool: BaseModel) -> Function:
-        return Function.validate(get_tool_from_pydantic(tool))
-    
+        return Function.validate(get_tool_from_pydantic_chema(tool))
+
+    def get_tool_mapping(
+        self, tools: list[tuple[BaseModel, Any]]
+    ) -> Tuple[list[Any], dict[str, dict]]:
+        llm_tools = [self.get_tool_from_pydantic(tool) for tool, _ in tools]
+        call_tools = {
+            self.get_tool_from_pydantic(tool).name: call for tool, call in tools
+        }
+        return llm_tools, call_tools
+
     def get_probs(self, completion: Any):
         return []
 
@@ -309,15 +398,6 @@ class LMStudioAPIModel(APIModel):
         super().__init__(name)
         self.client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
         self.get_tool_from_pydantic = pydantic_function_tool
-
-    def get_text_message(self, completion: Any) -> str:
-        return completion.choices[0].message.content
-
-    def get_structure(self, completion: Any) -> BaseModel:
-        return completion.choices[0].message.parsed
-
-    def get_usage(self, completion: Any) -> dict:
-        return completion.usage
 
     def signle_response(self, messages, structure, temperature):
         if structure is None:
@@ -350,4 +430,7 @@ class LMStudioAPIModel(APIModel):
         return {"role": "tool", "content": result, "tool_call_id": call_id}
 
     def get_probs(self, completion: Any):
-        return []
+        return [
+            (x.token, math.exp(x.logprob))
+            for x in completion.choices[0].logprobs.content
+        ]

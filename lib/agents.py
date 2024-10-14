@@ -1,7 +1,11 @@
-from pydantic import BaseModel
-from typing import TypedDict
 import json
-from langgraph.graph import StateGraph, END, START
+from typing import Tuple, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel
+
+from lib.models import APIModel
+from lib.utils import execute_react_tool
 
 
 class ConfigProxy:
@@ -96,9 +100,10 @@ class LLMLambda:
         config.print_header(f"LLM Lambda {self.print_name}")
         context = self.context.format_map(config.__dict__)
         config.print_logs(f"Query: {context}")
-        result, _, probs, _  = self.model.model_response(
-                context, structure=self.structure, need_logprobs=self.need_logprobs
-            )
+        message, _, probs, _ = self.model.model_response(
+            context, structure=self.structure, need_logprobs=self.need_logprobs
+        )
+        result = self.model.get_structure_from_message(message)
         if self.need_logprobs:
             config.set_by_name(self.output_name + "_probs", probs)
         config.set_by_name(self.output_name, result)
@@ -169,20 +174,21 @@ class Planner:
         {plans_str}
         """
         config.print_logs(f"Prompt: {planner_cot_voter_prompt}")
-        result, _ = self.model.single_query_response(
+        result, _ = self.model.model_response(
             planner_cot_voter_prompt, structure=SelfConsistencyFormat
         )
-        result = result.parsed
+        result = self.model.get_structure_from_message(result)
         config.print_logs(f"Response: {result}")
         return plans[result.chosen_plan_index]
 
     def cot_planner(self, config):
         context = self.context.format_map(config.__dict__)
+        action_space_prompt_snippet = "\n - ".join(self.action_space)
         planner_prompt = f"""
         {context}
 
         You can do these and only these actions as steps:
-        {"- \n".join(self.action_space)}
+        {action_space_prompt_snippet}
 
         Do not give any examples, only plan for the task, be precise. Think step by step.
         You can use only steps written above!
@@ -194,10 +200,10 @@ class Planner:
         }}
         """
         config.print_logs(f"Prompt: {planner_prompt}")
-        result, _, probs = self.model.single_query_response(
-            planner_prompt, structure=PlanFormat, need_logprobs=True
+        message, _, probs, _ = self.model.model_response(
+            planner_prompt, structure=PlanChoiceFormat, need_logprobs=self.need_logprobs
         )
-        result = result.parsed
+        result = self.model.get_structure_from_message(message)
         config.probs.append(probs)
         config.print_logs(f"Response: \n{result}")
         return (
@@ -210,6 +216,7 @@ class Planner:
         current_plan = []
         current_step = 0
         context = self.context.format_map(config.__dict__)
+        action_space_prompt_snippet = "\n - ".join(self.action_space)
         while current_step < self.tot_rounds:
             current_plan_str = (
                 "Empty"
@@ -219,7 +226,7 @@ class Planner:
             planner_prompt = f"""
             {context}
             You can do these and only these actions as steps:
-            {"- \n".join(self.action_space)}
+            {action_space_prompt_snippet}
             You can use only steps written above!
             You will be given current non-finished plan.
             You should produce {self.tot_number} possible options for the next step of the plan. 
@@ -234,10 +241,10 @@ class Planner:
             Current plan: 
             {current_plan_str}
             """
-            result, _ = self.model.single_query_response(
+            message, _, _, _ = self.model.model_response(
                 planner_prompt, structure=PlanStepFormat
             )
-            result = result.parsed
+            result = self.model.get_structure_from_message(message)
             options = result.options
             options_str = "\n".join([f"{n}: {el}" for n, el in enumerate(options)])
             config.print_logs(f"Response: {result}")
@@ -261,10 +268,10 @@ class Planner:
             Possible options: 
             {options_str}
             """
-            result, _ = self.model.single_query_response(
+            message, _, _, _ = self.model.model_response(
                 planner_tot_discriminator_prompt, structure=PlanChoiceFormat
             )
-            result = result.parsed
+            result = self.model.get_structure_from_message(message)
             config.print_logs(f"Response: {result}")
             next_option = options[result.chosen_option_index]
             current_plan.append(next_option)
@@ -320,19 +327,16 @@ class PlannerDomainReflector:
             Plan:
             {current_plan}
             """
-            result, _ = self.model.single_query_response(
+            message, _, _, _ = self.model.model_response(
                 planner_critic_cells_prompt, structure=PlanReflector
             )
-            result = result.parsed
+            result = self.model.get_structure_from_message(message)
             config.print_logs(f"Response: {result}")
             if not result.changed:
                 break
             current_plan = result.plan
         config.set_by_name(self.output_name, result.plan)
 
-
-class ReActExecutor:
-    pass
 
 class ToolCallingExecutor:
     def __init__(
@@ -355,11 +359,7 @@ class ToolCallingExecutor:
         self.state_model = state_model
         self.post_hook = post_hook
         self.print_name = str(id(self)) if print_name is None else print_name
-        self.llm_tools = [model.get_tool_from_pydantic(tool) for tool, _ in tools]
-        self.call_tools = {
-            model.get_tool_from_pydantic(tool)["function"]["name"]: call
-            for tool, call in tools
-        }
+        self.llm_tools, self.call_tools = self.model.get_tool_mapping(tools)
 
     def invoke(self, config):
         config.print_header("ENTERING EXECUTOR")
@@ -369,22 +369,82 @@ class ToolCallingExecutor:
             {"role": "system", "content": context},
         ]
         while True:
-            message, usage = self.model.single_query_response(
-                dialog, tools=self.llm_tools
-            )
+            message, _, _, _ = self.model.model_response(dialog, tools=self.llm_tools)
             dialog.append(message)
-            if message.tool_calls is None:
+
+            tool_calls = self.model.get_tool_call_from_message(message)
+            if len(tool_calls) == 0:
                 break
-            for toolcall in message.tool_calls:
+
+            for name, arguments, call_id in tool_calls:
                 config.print_header("TOOL CALL")
-                arguments = json.loads(toolcall.function.arguments)
-                name = toolcall.function.name
                 config.print_logs("Tool name: " + name)
                 config.print_logs("Tool arguments: " + str(arguments))
                 call_result = self.call_tools.get(name)(**arguments)
                 config.print_logs("Tool executed: \n" + call_result)
-                dialog.append(self.model.tool_feedback(call_result, toolcall.id))
+                dialog.append(self.model.tool_feedback(call_result, call_id))
         config.set_by_name(self.output_name, message.content)
+
+
+class ReActExecutor:
+    def __init__(
+        self,
+        context,
+        tools: Tuple[BaseModel, callable],
+        model: APIModel,
+        output_name,
+        plan=None,
+        plan_type="proxy",
+        state_model=None,
+        post_hook=None,
+        print_name=None,
+        react_rounds=2,
+        react_steps=5,
+    ):
+        self.context = context
+        self.model = model
+        self.output_name = output_name
+        self.plan = plan
+        self.plan_type = plan_type
+        self.state_model = state_model
+        self.post_hook = post_hook
+        self.react_rounds = react_rounds
+        self.react_steps = react_steps
+        self.print_name = str(id(self)) if print_name is None else print_name
+        self.llm_tools, self.call_tools = self.model.get_tool_mapping(tools)
+
+    def invoke(self, config):
+        config.print_header("ENTERING EXECUTOR")
+        self.context = self.context.format_map(config.__dict__)
+        config.print_logs(self.context)
+
+        for _ in range(self.react_rounds):
+            dialog = [
+                {"role": "system", "content": self.context},
+            ]
+            step = 0
+            while True:
+                message, _, _, _ = self.model.model_response(
+                    dialog, tools=self.llm_tools, temperature=1.0
+                )
+                dialog.append(message)
+                thoughts = message.content
+                tool_calls = self.model.get_tool_call_from_message(message)
+                if len(tool_calls) == 0 or step >= self.react_steps:
+                    break
+
+                for name, arguments, call_id in tool_calls:
+                    config.print_header("TOOL CALL")
+                    config.print_logs("Tool name: " + name)
+                    config.print_logs("Tool arguments: " + str(arguments))
+                    call_result = execute_react_tool(
+                        thoughts, name, arguments, self.call_tools
+                    )
+                    config.print_logs("Tool executed: \n" + call_result)
+                    print(f"Tool result:", call_result)
+                    dialog.append(self.model.tool_feedback(call_result, name, call_id))
+                    step += 1
+        config.set_by_name(self.output_name, tool_calls)
 
 
 class AgentState(TypedDict):
@@ -414,7 +474,10 @@ class Agent:
                             builder.add_node(
                                 right, lambda _, node=el: node.invoke(self.config)
                             )
-                    self.d = {value: END if el == "END" else el.print_name for value, el in node[2].items()}
+                    self.d = {
+                        value: END if el == "END" else el.print_name
+                        for value, el in node[2].items()
+                    }
                     builder.add_conditional_edges(
                         left,
                         lambda _, node=node[1]: self.config.get_by_name(node),

@@ -1,11 +1,16 @@
 import json
 import re
+import uuid
 from collections.abc import Iterable
-from pydantic import BaseModel, ValidationError
+from typing import Any, Dict, List
+
 from gigachat.models import Messages
+from pydantic import BaseModel, ValidationError
+
 
 class ParsedMessage(Messages):
     parsed: str | None = None
+
 
 def generate_structured_prompt(schema):
     description = schema.get("description", "")
@@ -30,7 +35,7 @@ def generate_structured_prompt(schema):
 
     def process_field(field_name, field_info, required_fields, definitions, indent):
         indent_str = "  " * indent
-        
+
         # Initialize field description
         field_desc = field_info.get("description", "")
         if field_desc:
@@ -229,7 +234,7 @@ def handle_structured(completion, structure: BaseModel):
     return completion
 
 
-def get_tool_from_pydantic(model):
+def get_tool_from_pydantic_chema(model):
     """Converts pydantic BasicModel to the gigachat api tool format"""
     schema = model.model_json_schema()
 
@@ -291,3 +296,53 @@ def get_tool_from_pydantic(model):
     }
 
     return tool_schema
+
+
+def remove_trailing_commas(json_string: str) -> str:
+    """
+    Removes trailing commas from the JSON-like string to make it valid JSON.
+
+    Args:
+        json_string (str): The raw JSON-like string.
+
+    Returns:
+        str: The cleaned JSON string without trailing commas.
+    """
+    # Remove trailing commas before closing braces/brackets
+    json_string = re.sub(r",\s*(\}|])", r"\1", json_string)
+    return json_string
+
+
+def generate_func_state_id(txt: str):
+    namespace = uuid.NAMESPACE_DNS
+    return str(uuid.uuid5(namespace, txt))
+
+
+def execute_react_tool(
+    thoughts: str,
+    tool_name: str,
+    args: Dict[str, Any],
+    available_tools: Dict[str, Any],
+) -> List[Any]:
+    react_prompt_template = """
+    Thought: {thoughts}
+    Action: {function_name}({arguments})
+    Observation: {observation}
+    """
+
+    if tool_name in available_tools:
+        try:
+            tool = available_tools[tool_name]
+            tool_out = tool(**args)
+        except Exception as e:
+            tool_out = f"Error executing tool {tool_name}: {e} Check the tool names or arguments and try again."
+    else:
+        tool_out = f"Tool {tool_name} not found. Try again with a valid tool name."
+
+    result_prompt = react_prompt_template.format(
+        thoughts=thoughts,
+        function_name=tool_name,
+        arguments=args,
+        observation=tool_out,
+    )
+    return result_prompt
