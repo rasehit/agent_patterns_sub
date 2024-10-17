@@ -393,10 +393,10 @@ class GigaChatModel(OpenAILikeAPIModel):
         return {"role": "function", "content": result, "functions_state_id": call_id}
 
 
-class LMStudioAPIModel(APIModel):
-    def __init__(self, name):
+class OpenAPIModel(OpenAILikeAPIModel):
+    def __init__(self, name, base_url="http://localhost:1234/v1", api_key="lm-studio"):
         super().__init__(name)
-        self.client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
+        self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.get_tool_from_pydantic = pydantic_function_tool
 
     def signle_response(self, messages, structure, temperature):
@@ -426,11 +426,23 @@ class LMStudioAPIModel(APIModel):
         )
         return completion
 
+    def get_tool_call_from_message(self, message: Any) -> list[tuple[str, dict, str]]:
+        tool_calls = message.tool_calls
+        if tool_calls is None:
+            return []
+        return [
+            (call.function.name, json.loads(call.function.arguments), call.id)
+            for call in tool_calls
+        ]
+
     def tool_feedback(self, result, call_id):
         return {"role": "tool", "content": result, "tool_call_id": call_id}
 
-    def get_probs(self, completion: Any):
+    def get_probs(self, completion: Any) -> list[tuple[Any, float]]:
         return [
             (x.token, math.exp(x.logprob))
             for x in completion.choices[0].logprobs.content
         ]
+
+    def get_tool_from_pydantic(self, tool: BaseModel) -> Any:
+        return pydantic_function_tool(tool)

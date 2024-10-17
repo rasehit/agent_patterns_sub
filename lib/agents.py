@@ -66,14 +66,15 @@ class PlanReflector(BaseModel):
 
 
 class FreeLambda:
-    def __init__(self, hook, output_name, print_name=None):
+    def __init__(self, hook, output_name=None, print_name=None):
         self.hook = hook
         self.output_name = output_name
         self.print_name = str(id(self)) if print_name is None else print_name
 
     def invoke(self, config):
         result = self.hook(config)
-        config.set_by_name(self.output_name, result)
+        if result is not None:
+            config.set_by_name(self.output_name, result)
 
 
 class LLMLambda:
@@ -82,6 +83,7 @@ class LLMLambda:
         context,
         model,
         structure=None,
+        temperature=0.0,
         need_logprobs=False,
         post_hook=None,
         output_name="",
@@ -89,6 +91,7 @@ class LLMLambda:
     ):
         self.context = context
         self.model = model
+        self.temperature = temperature
         self.structure = structure
         self.need_logprobs = need_logprobs
         self.post_hook = post_hook
@@ -101,9 +104,13 @@ class LLMLambda:
         context = self.context.format_map(config.__dict__)
         config.print_logs(f"Query: {context}")
         message, _, probs, _ = self.model.model_response(
-            context, structure=self.structure, need_logprobs=self.need_logprobs
+            context, structure=self.structure, need_logprobs=self.need_logprobs, temperature=self.temperature
         )
-        result = self.model.get_structure_from_message(message)
+        result = (
+            self.model.get_structure_from_message(message)
+            if self.structure is not None
+            else self.model.get_text_from_message(message)
+        )
         if self.need_logprobs:
             config.set_by_name(self.output_name + "_probs", probs)
         config.set_by_name(self.output_name, result)
