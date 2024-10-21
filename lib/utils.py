@@ -1,3 +1,4 @@
+from functools import wraps
 import json
 import re
 import uuid
@@ -346,3 +347,30 @@ def execute_react_tool(
         observation=tool_out,
     )
     return result_prompt
+
+def _immutable_dialog(dialog):
+    """
+    Convert dialog list of dicts to a tuple of tuples.
+    """
+    return tuple(
+        tuple(sorted(item.items())) for item in dialog
+    )
+    
+def cache_model_response(func):
+    cache = {}
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # Convert dialog to a hashable type
+        self_instance = args[0]
+        dialog = args[1]
+        
+        dialog_hashable = _immutable_dialog(dialog)
+        key = dialog_hashable
+
+        if key in cache:
+            return cache[key]
+        
+        result = func(*args, **kwargs)
+        cache[key] = result
+        return result
+    return wrapper
