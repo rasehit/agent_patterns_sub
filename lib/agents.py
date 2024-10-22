@@ -95,15 +95,18 @@ class LLMLambda:
         self.structure = structure
         self.need_logprobs = need_logprobs
         self.post_hook = post_hook
+        if self.post_hook is not None:
+            if not isinstance(self.post_hook, list):
+                self.post_hook = [self.post_hook]
         self.output_name = output_name
         self.print_name = str(id(self)) if print_name is None else print_name
-        self.print_name += " (Model: " + self.model.name + ")"
+        self.print_name += " (Model " + self.model.name + ")"
 
     def invoke(self, config):
         config.print_header(f"LLM Lambda {self.print_name}")
         context = self.context.format_map(config.__dict__)
         config.print_logs(f"Query: {context}")
-        message, _, probs, _ = self.model.model_response(
+        message, usage, probs, _ = self.model.model_response(
             context, structure=self.structure, need_logprobs=self.need_logprobs, temperature=self.temperature
         )
         result = (
@@ -113,9 +116,12 @@ class LLMLambda:
         )
         if self.need_logprobs:
             config.set_by_name(self.output_name + "_probs", probs)
-        config.set_by_name(self.output_name, result)
+        if result is not None:
+            config.set_by_name(self.output_name, result)
+        config.set_by_name(self.output_name + "_usage", usage)
         if self.post_hook is not None:
-            self.post_hook(config)
+            for hook in self.post_hook:
+                hook(config)
         config.print_logs("Response: \n" + str(result))
 
 
