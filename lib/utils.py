@@ -12,14 +12,20 @@ from pydantic import BaseModel, ValidationError
 class ParsedMessage(Messages):
     parsed: str | None = None
 
+json_prompt_lang = {
+    'ru_header': 'Пожалуйста, предоставь объект JSON со следующими полями:\n',
+    'en_header': "Please provide a JSON object with the following fields:\n",
+    'ru_bottom': '\nУбедись, что объект JSON соответствует этой схеме. Ответь коротким JSON объектом.',
+    'en_bottom': '\nEnsure that the JSON object conforms to this schema. Answer in short JSON object.'
+}
 
-def generate_structured_prompt(schema):
+def generate_structured_prompt(schema, lang='ru'):
     description = schema.get("description", "")
     properties = schema.get("properties", {})
     required_fields = schema.get("required", [])
 
     prompt = f"{description.strip()}\n"
-    prompt += "Please provide a JSON object with the following fields:\n"
+    prompt += json_prompt_lang['ru_header'] if lang == 'ru' else json_prompt_lang['en_header']
 
     definitions = schema.get("definitions", {}) or schema.get("$defs", {})
 
@@ -187,7 +193,7 @@ def generate_structured_prompt(schema):
 
     prompt += generate_prompt_for_properties(properties, required_fields, definitions)
 
-    prompt += "\nEnsure that the JSON object conforms to this schema. Answer in short JSON object."
+    prompt += json_prompt_lang["ru_bottom"] if lang == "ru" else json_prompt_lang["en_bottom"]
     return prompt
 
 
