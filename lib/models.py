@@ -10,7 +10,7 @@ from gigachat.models import Chat, Function, FunctionCall, Messages
 from mistralai import Mistral
 from openai import OpenAI, pydantic_function_tool
 from pydantic import BaseModel
-
+from termcolor import colored
 from .utils import (
     generate_func_state_id,
     generate_structured_prompt,
@@ -21,8 +21,9 @@ from .utils import (
 
 
 class APIModel(ABC):
-    def __init__(self, name):
+    def __init__(self, name, debug=False):
         self.name = name
+        self.debug = debug
 
     def model_response(
         self,
@@ -54,6 +55,11 @@ class APIModel(ABC):
         else:
             return
 
+        if self.debug:
+            print(colored(f"Model input:", "green"))
+            for d in dialog:
+                print(colored(f"{d.content}", "green"))
+                    
         if tools is None:
             start = datetime.utcnow()
             completion = self.signle_response(dialog, structure, temperature)
@@ -64,6 +70,11 @@ class APIModel(ABC):
             end = datetime.utcnow()
 
         result = completion.choices[0].message
+        
+        if self.debug:
+            print(colored(f"Model output:\n{result.content}", "red"))
+            print(colored(f"Structure:\n{self.get_structure_from_message(result)}", "red"))
+            print(colored(f"functions:\n{self.get_tool_call_from_message(result)}", "red"))
 
         usage = self.get_usage(completion)
         created = datetime.utcfromtimestamp(completion.created)
@@ -151,8 +162,8 @@ class APIModel(ABC):
 
 
 class OpenAILikeAPIModel(APIModel):
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, name, debug=False):
+        super().__init__(name, debug)
 
     def get_text_from_message(self, message: Any) -> str:
         return message.content
@@ -175,8 +186,8 @@ class OpenAILikeAPIModel(APIModel):
 
 
 class OpenAIModel(OpenAILikeAPIModel):
-    def __init__(self, name):
-        super().__init__(name)
+    def __init__(self, name, debug=False):
+        super().__init__(name, debug)
 
     def signle_response(self, messages, structure, temperature):
         if structure is None:
@@ -228,11 +239,12 @@ class OpenAIModel(OpenAILikeAPIModel):
 
 
 class MistralModel(OpenAILikeAPIModel):
-    def __init__(self, name: str, max_tokens=2048):
-        super().__init__(name)
+    def __init__(self, name: str, max_tokens=2048, lang='ru', debug=False):
+        super().__init__(name, debug)
         self.client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
         self.max_tokens = max_tokens
-
+        self.lang = lang
+        
     def signle_response(self, messages, structure, temperature):
         if structure is not None:
             last_message = messages[-1]
@@ -278,7 +290,7 @@ class MistralModel(OpenAILikeAPIModel):
 
     def get_structured_query(self, structure, message: dict) -> dict:
         content = message["content"]
-        structure_prompt = generate_structured_prompt(structure.model_json_schema())
+        structure_prompt = generate_structured_prompt(structure.model_json_schema(), self.lang)
         content += f"\n{structure_prompt}"
         message["content"] = content
         return message
@@ -294,10 +306,11 @@ class MistralModel(OpenAILikeAPIModel):
 
 
 class GigaChatModel(OpenAILikeAPIModel):
-    def __init__(self, name: str, max_tokens=2048):
-        super().__init__(name)
+    def __init__(self, name: str, max_tokens=2048, lang='ru', debug=False):
+        super().__init__(name, debug)
         self.giga = GigaChat(model=self.name)
         self.max_tokens = max_tokens
+        self.lang = lang
 
     def signle_response(self, messages, structure, temperature):
         gigachat_messages = [Messages.validate(message) for message in messages]
@@ -332,7 +345,7 @@ class GigaChatModel(OpenAILikeAPIModel):
 
     def get_structured_query(self, structure, message: dict) -> dict:
         content = message.content
-        structure_prompt = generate_structured_prompt(structure.model_json_schema())
+        structure_prompt = generate_structured_prompt(structure.model_json_schema(), self.lang)
         content += f"\n{structure_prompt}"
         schema = message.__dict__
         schema["content"] = content
